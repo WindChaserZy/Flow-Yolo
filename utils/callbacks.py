@@ -46,8 +46,8 @@ class LossHistory():
             f.write(str(val_loss))
             f.write("\n")
 
-        self.writer.add_scalar('loss', loss, epoch)
-        self.writer.add_scalar('val_loss', val_loss, epoch)
+        self.writer.add_scalar('loss', loss, len(self.losses))
+        self.writer.add_scalar('val_loss', val_loss, len(self.losses))
         self.loss_plot()
 
     def loss_plot(self):

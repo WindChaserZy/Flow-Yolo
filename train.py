@@ -48,7 +48,7 @@ if __name__ == "__main__":
     #   Seed    用于固定随机种子
     #           使得每次独立训练都可以获得一样的结果
     #----------------------------------------------#
-    seed            = 11
+    seed            = 114514
     #---------------------------------------------------------------------#
     #   distributed     用于指定是否使用单机多卡分布式运行
     #                   终端指令仅支持Ubuntu。CUDA_VISIBLE_DEVICES用于在Ubuntu下指定显卡。
@@ -101,6 +101,7 @@ if __name__ == "__main__":
     #   2、了解imagenet数据集，首先训练分类模型，获得网络的主干部分权值，分类模型的 主干部分 和该模型通用，基于此进行训练。
     #----------------------------------------------------------------------------------------------------------------------------#
     model_path      = 'model_data/yolov5_s.pth'
+    #model_path = ''
     #------------------------------------------------------#
     #   input_shape     输入的shape大小，一定要是32的倍数
     #------------------------------------------------------#
@@ -118,7 +119,7 @@ if __name__ == "__main__":
     #                   如果不设置model_path，pretrained = True，此时仅加载主干开始训练。
     #                   如果不设置model_path，pretrained = False，Freeze_Train = Fasle，此时从0开始训练，且没有冻结主干的过程。
     #----------------------------------------------------------------------------------------------------------------------------#
-    pretrained      = False
+    pretrained      = True
     #------------------------------------------------------#
     #   phi             所使用的YoloV5的版本。s、m、l、x
     #                   在除cspdarknet的其它主干中仅影响panet的大小
@@ -182,8 +183,8 @@ if __name__ == "__main__":
     #                       (当Freeze_Train=False时失效)
     #------------------------------------------------------------------#
     Init_Epoch          = 0
-    Freeze_Epoch        = 50
-    Freeze_batch_size   = 16
+    Freeze_Epoch        = 2
+    Freeze_batch_size   = 2
     #------------------------------------------------------------------#
     #   解冻阶段训练参数
     #   此时模型的主干不被冻结了，特征提取网络会发生改变
@@ -193,8 +194,8 @@ if __name__ == "__main__":
     #                           Adam可以使用相对较小的UnFreeze_Epoch
     #   Unfreeze_batch_size     模型在解冻后的batch_size
     #------------------------------------------------------------------#
-    UnFreeze_Epoch      = 300
-    Unfreeze_batch_size = 8
+    UnFreeze_Epoch      = 6
+    Unfreeze_batch_size = 2
     #------------------------------------------------------------------#
     #   Freeze_Train    是否进行冻结训练
     #                   默认先冻结主干训练后解冻训练。
@@ -296,7 +297,7 @@ if __name__ == "__main__":
     #------------------------------------------------------#
     #   创建yolo模型
     #------------------------------------------------------#
-    model = YoloBody(anchors_mask, num_classes, phi, backbone, pretrained=pretrained, input_shape=input_shape)
+    model = YoloBody(anchors_mask, num_classes, phi, pretrained=pretrained, input_shape=input_shape)
     if not pretrained:
         weights_init(model)
     if model_path != '':
@@ -427,6 +428,8 @@ if __name__ == "__main__":
         if Freeze_Train:
             for param in model.backbone.parameters():
                 param.requires_grad = False
+            for param in model.feature_net.flow_net.parameters():
+                param.requires_grad = False
 
         #-------------------------------------------------------------------#
         #   如果不冻结训练的话，直接设置batch_size为Unfreeze_batch_size
@@ -480,11 +483,11 @@ if __name__ == "__main__":
         #---------------------------------------#
         #   构建数据集加载器。
         #---------------------------------------#
-        train_dataset   = YoloDataset(train_lines, input_shape, num_classes, anchors, anchors_mask, epoch_length=UnFreeze_Epoch, \
+        train_dataset   = YoloDataset('/scratch/stu5/bdd100k_videos_train_00',train_lines, input_shape, num_classes, anchors, anchors_mask, epoch_length=UnFreeze_Epoch, \
                                         mosaic=mosaic, mixup=mixup, mosaic_prob=mosaic_prob, mixup_prob=mixup_prob, train=True, special_aug_ratio=special_aug_ratio)
-        val_dataset     = YoloDataset(val_lines, input_shape, num_classes, anchors, anchors_mask, epoch_length=UnFreeze_Epoch, \
+        '''val_dataset     = YoloDataset('/scratch/stu5/bdd100k_videos_train_00',val_lines, input_shape, num_classes, anchors, anchors_mask, epoch_length=UnFreeze_Epoch, \
                                         mosaic=False, mixup=False, mosaic_prob=0, mixup_prob=0, train=False, special_aug_ratio=0)
-        
+        '''
         if distributed:
             train_sampler   = torch.utils.data.distributed.DistributedSampler(train_dataset, shuffle=True,)
             val_sampler     = torch.utils.data.distributed.DistributedSampler(val_dataset, shuffle=False,)
@@ -495,10 +498,10 @@ if __name__ == "__main__":
             val_sampler     = None
             shuffle         = True
 
-        gen             = DataLoader(train_dataset, shuffle = shuffle, batch_size = batch_size, num_workers = num_workers, pin_memory=True,
+        gen             = DataLoader(train_dataset, shuffle = True, batch_size = batch_size, num_workers = num_workers, pin_memory=True,
                                     drop_last=True, collate_fn=yolo_dataset_collate, sampler=train_sampler, 
                                     worker_init_fn=partial(worker_init_fn, rank=rank, seed=seed))
-        gen_val         = DataLoader(val_dataset  , shuffle = shuffle, batch_size = batch_size, num_workers = num_workers, pin_memory=True, 
+        gen_val         = DataLoader(train_dataset  , shuffle = shuffle, batch_size = batch_size, num_workers = num_workers, pin_memory=True, 
                                     drop_last=True, collate_fn=yolo_dataset_collate, sampler=val_sampler, 
                                     worker_init_fn=partial(worker_init_fn, rank=rank, seed=seed))
 
@@ -553,7 +556,7 @@ if __name__ == "__main__":
                 gen             = DataLoader(train_dataset, shuffle = shuffle, batch_size = batch_size, num_workers = num_workers, pin_memory=True,
                                             drop_last=True, collate_fn=yolo_dataset_collate, sampler=train_sampler, 
                                             worker_init_fn=partial(worker_init_fn, rank=rank, seed=seed))
-                gen_val         = DataLoader(val_dataset  , shuffle = shuffle, batch_size = batch_size, num_workers = num_workers, pin_memory=True, 
+                gen_val         = DataLoader(train_dataset  , shuffle = shuffle, batch_size = batch_size, num_workers = num_workers, pin_memory=True, 
                                             drop_last=True, collate_fn=yolo_dataset_collate, sampler=val_sampler, 
                                             worker_init_fn=partial(worker_init_fn, rank=rank, seed=seed))
 
@@ -566,7 +569,7 @@ if __name__ == "__main__":
                 train_sampler.set_epoch(epoch)
 
             set_optimizer_lr(optimizer, lr_scheduler_func, epoch)
-
+            epoch_step = len(train_dataset)
             fit_one_epoch(model_train, model, ema, yolo_loss, loss_history, eval_callback, optimizer, epoch, epoch_step, epoch_step_val, gen, gen_val, UnFreeze_Epoch, Cuda, fp16, scaler, save_period, save_dir, local_rank)
             
             if distributed:

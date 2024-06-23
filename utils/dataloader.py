@@ -5,12 +5,15 @@ import numpy as np
 import torch
 from PIL import Image
 from torch.utils.data.dataset import Dataset
+import os, random
+import pandas as pd
 
 from utils.utils import cvtColor, preprocess_input
 
+LENGTH = 16
 
 class YoloDataset(Dataset):
-    def __init__(self, annotation_lines, input_shape, num_classes, anchors, anchors_mask, epoch_length, \
+    def __init__(self, root_dir, annotation_lines, input_shape, num_classes, anchors, anchors_mask, epoch_length, \
                         mosaic, mixup, mosaic_prob, mixup_prob, train, special_aug_ratio = 0.7):
         super(YoloDataset, self).__init__()
         self.annotation_lines   = annotation_lines
@@ -19,7 +22,7 @@ class YoloDataset(Dataset):
         self.anchors            = anchors
         self.anchors_mask       = anchors_mask
         self.epoch_length       = epoch_length
-        self.mosaic             = mosaic
+        self.mosaic             = False
         self.mosaic_prob        = mosaic_prob
         self.mixup              = mixup
         self.mixup_prob         = mixup_prob
@@ -32,32 +35,59 @@ class YoloDataset(Dataset):
         self.bbox_attrs         = 5 + num_classes
         self.threshold          = 4
 
+        print("-------------Dataset Initializing-----------------")
+        self.csv = pd.read_csv(os.path.join(root_dir, 'new_labels.csv'))
+        self.root_dir = os.path.join(root_dir, 'bdd100k/videos/train')
+        self.category_dict = ['car', 'pedestrian', 'truck', 'motorcycle', 'rider', 'bicycle', 'bus','other vehicle', 'train', 'other person', 'trailer']
+        self.csv['name'] = pd.Categorical(self.csv['name'],categories=self.csv['name'].unique(), ordered=True)
+        self.frame_list = [group for _, group in self.csv.groupby('name')]
+        self.filter_list = self.get_filter_list(self.frame_list)
+        self.filter_list.append(len(self.frame_list)-1)
+        self.frame_width = 1080
+        self.frame_height = 720
+        print("--------------Dataset Initialized----------------")
+    
+
     def __len__(self):
-        return self.length
+        return len(self.filter_list)-1
 
-    def __getitem__(self, index):
-        index       = index % self.length
+    def __getitem__(self, idx):
+        start_min = self.filter_list[idx]
+        start_max = self.filter_list[idx+1] - (LENGTH+1)
+        start = random.randint(start_min, start_max)
+        end = start + LENGTH
+        frame, box, y_true = [], [], []
+        for i in range(start, end):
+            f, b ,y = self.__singleitem__(i)
+            frame.append(f)
+            box.append(b)
+            y_true.append(y)
+        return frame, box, y_true
 
-        #---------------------------------------------------#
-        #   训练时进行数据的随机增强
-        #   验证时不进行数据的随机增强
-        #---------------------------------------------------#
-        if self.mosaic and self.rand() < self.mosaic_prob and self.epoch_now < self.epoch_length * self.special_aug_ratio:
-            lines = sample(self.annotation_lines, 3)
-            lines.append(self.annotation_lines[index])
-            shuffle(lines)
-            image, box  = self.get_random_data_with_Mosaic(lines, self.input_shape)
-            
-            if self.mixup and self.rand() < self.mixup_prob:
-                lines           = sample(self.annotation_lines, 1)
-                image_2, box_2  = self.get_random_data(lines[0], self.input_shape, random = self.train)
-                image, box      = self.get_random_data_with_MixUp(image, box, image_2, box_2)
-        else:
-            image, box      = self.get_random_data(self.annotation_lines[index], self.input_shape, random = self.train)
+    def __singleitem__(self, idx):
+        df = self.frame_list[idx]
+        label, box = [], []
+        video_name, frame_idx = df.iloc[0]['videoName'], df.iloc[0]['frameIndex']
+        
+        video_path = os.path.join(self.root_dir, video_name +'.mov')
+        video = cv2.VideoCapture(video_path)
+        video.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        _ , frame = video.read()
+        video.release()
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frame = cv2.resize(frame,(640,640))
+        frame = np.array(frame)
 
-        image       = np.transpose(preprocess_input(np.array(image, dtype=np.float32)), (2, 0, 1))
-        box         = np.array(box, dtype=np.float32)
-        if len(box) != 0:
+        for row in df.itertuples():
+            label.append(self.category_dict.index(row.category))
+            box.append([(row.box2dx1 + row.box2dx2) / (2 * self.frame_width), (row.box2dy1 + row.box2dy2) / (2 * self.frame_height),
+                        (row.box2dx2 - row.box2dx1) / self.frame_width, (row.box2dy2 - row.box2dy1) / self.frame_height])
+
+        image = np.transpose(preprocess_input(np.array(frame, dtype=np.float32)), (2, 0, 1))
+        box = np.array(box, dtype=np.float32)
+        label = np.array(label, dtype=np.float32).reshape(-1,1)
+        box = np.concatenate((box, label), axis=1)
+        '''if len(box) != 0:
             #---------------------------------------------------#
             #   对真实框进行归一化，调整到0-1之间
             #---------------------------------------------------#
@@ -69,9 +99,21 @@ class YoloDataset(Dataset):
             #   序号为4的部分，为真实框的种类
             #---------------------------------------------------#
             box[:, 2:4] = box[:, 2:4] - box[:, 0:2]
-            box[:, 0:2] = box[:, 0:2] + box[:, 2:4] / 2
+            box[:, 0:2] = box[:, 0:2] + box[:, 2:4] / 2'''
         y_true = self.get_target(box)
         return image, box, y_true
+    
+    def get_filter_list(self, frame_list):
+        changes = [0]
+        video_name = frame_list[0].iloc[0]['videoName']
+        for i, frame in enumerate(frame_list):
+            if frame.iloc[0]['videoName'] != video_name:
+                video_name = frame.iloc[0]['videoName']
+                changes.append(i)
+        res = []
+        for point in changes:
+            res.append(point)
+        return res
 
     def rand(self, a=0, b=1):
         return np.random.rand()*(b-a) + a
@@ -489,10 +531,12 @@ class YoloDataset(Dataset):
     
 # DataLoader中collate_fn使用
 def yolo_dataset_collate(batch):
+    batch = batch[0]
+    combined_batch = list(zip(batch[0], batch[1], batch[2]))
     images  = []
     bboxes  = []
-    y_trues = [[] for _ in batch[0][2]]
-    for img, box, y_true in batch:
+    y_trues = [[] for _ in combined_batch[0][2]]
+    for img, box, y_true in combined_batch:
         images.append(img)
         bboxes.append(box)
         for i, sub_y_true in enumerate(y_true):
@@ -501,4 +545,4 @@ def yolo_dataset_collate(batch):
     images  = torch.from_numpy(np.array(images)).type(torch.FloatTensor)
     bboxes  = [torch.from_numpy(ann).type(torch.FloatTensor) for ann in bboxes]
     y_trues = [torch.from_numpy(np.array(ann, np.float32)).type(torch.FloatTensor) for ann in y_trues]
-    return images, bboxes,y_trues
+    return images, bboxes, y_trues
